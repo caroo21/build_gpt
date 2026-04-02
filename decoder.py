@@ -2,15 +2,16 @@
 import torch 
 import torch.nn as nn
 from torch.nn import functional as F
+import time
 
-batch_size = 32 # how many independent sequences processed in parallel
-block_size = 8 # max context length for predictions
+batch_size = 64 # how many independent sequences processed in parallel
+block_size = 256 # max context length for predictions
 max_iters = 5000
 eval_interval = 500
 learning_rate = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
-n_embed = 348
+n_embed = 384
 n_head = 6
 n_layer = 6
 dropout = 0.2
@@ -77,12 +78,14 @@ class Head(nn.Module):
         q = self.query(x)
 
         # compute attention scores ("affinities")
-        wei = q @ k.transpose(-2,-1) *C**-0.5 #-> B,T,T
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
-        wei = F.softmax(wei, dim=-1)
-        wei = self.dropout(wei)
+        # wei = q @ k.transpose(-2,-1) *C**-0.5 #-> B,T,T
+        # wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+        # wei = F.softmax(wei, dim=-1)
+        # wei = self.dropout(wei)
         v = self.value(x)
-        out = wei @ v
+        # out = wei @ v
+        # try flash attention for improvements
+        out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         return out
 
 class MultiHeadAttention(nn.Module):
@@ -105,7 +108,7 @@ class FeedForward(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(n_embed, 4 * n_embed),
-            nn.ReLU(),
+            nn.GELU(), #nn.ReLU(),
             nn.Linear(4 * n_embed, n_embed), # projection back in the residual pathway
             nn.Dropout(dropout)
         )
@@ -148,6 +151,9 @@ class BigramLanguageModel(nn.Module):
         self.blocks = nn.Sequential(*[Block(n_embed, n_head=n_head) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(n_embed)
         self.lm_head = nn.Linear(n_embed, vocab_size)
+
+        # weight tying
+        self.lm_head.weight = self.token_embedding_table.weight
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
@@ -198,6 +204,7 @@ model = BigramLanguageModel(vocab_size)
 m = model.to(device)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_iters)
 
 # training loop
 for iter in range(max_iters):
@@ -213,7 +220,11 @@ for iter in range(max_iters):
     logits, loss = m(xb, yb)
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     optimizer.step()
+    scheduler.step()
 
-context = torch.zeros((1,1), dtype=torch.long, device=device)
+start = time.time()
 print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
+print(f"Inference time: {time.time() - start:.2f}s")
+print(f"Parameters: {sum(p.numel() for p in m.parameters())/1e6:.2f}M")
