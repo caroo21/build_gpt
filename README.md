@@ -17,8 +17,8 @@ python decoder.py
 ## Scores
 | | Andrej Karpathy | My Results |
 |---|---|---|
-| Train Loss |1.0884 | 1.4778 |
-| Val Loss | ... | ... |
+| Train Loss |1.0884 | ... |
+| Val Loss | 1.4778 | ... |
 
 ## Improvements over base implementation
 
